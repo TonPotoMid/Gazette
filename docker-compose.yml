@@ -1,11 +1,11 @@
 # Pipeline complet, avec l'image publiée par la CI :
-#   docker compose pull && docker compose up -d      puis http://localhost:3000
-# Pour construire l'image depuis le code local : `docker compose up -d --build`.
+#   docker compose up -d      puis http://localhost:3000
+# Pour développer avec l'image construite depuis le code local :
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
 # Image et identifiants Postgres ont des valeurs par défaut ; les surcharger dans un fichier .env
 # (ex. GAZETTE_IMAGE=ghcr.io/tonpotomid/gazette:1.0.0 pour figer une version).
 
 x-dagster: &dagster
-  build: .
   image: ${GAZETTE_IMAGE:-ghcr.io/tonpotomid/gazette:latest}
   restart: unless-stopped
   environment:
