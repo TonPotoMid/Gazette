@@ -1,0 +1,16 @@
+# Développement : construit l'image depuis le code local au lieu de tirer celle de GHCR.
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d --build
+# Volontairement pas nommé docker-compose.override.yml : compose le chargerait tout seul
+# et `docker compose up -d` construirait alors toujours en local.
+
+x-build: &build
+  build: .
+  image: gazette-dagster:dev
+
+services:
+  code:
+    <<: *build
+  webserver:
+    <<: *build
+  daemon:
+    <<: *build
