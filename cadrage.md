@@ -4,7 +4,7 @@
 
 ## Le besoin
 
-Chaque matin, nous voulons savoir de quoi parle la presse française, nationale comme régionale, sans avoir à la lire nous-mêmes. Le pipeline récupère les titres et les extraits de 8 journaux. Il les range, les regroupe par thèmes et publie une « gazette » du jour. Il doit **tourner seul**, et nous devons pouvoir **prouver qu'il a tourné** : quand, combien d'articles, quelles sources ont échoué.
+Chaque matin, nous voulons savoir de quoi parle la presse française, nationale comme régionale, sans avoir à la lire nous-mêmes. Le pipeline récupère les titres et les extraits de 8 journaux. Il les range, les regroupe par thèmes et publie une « gazette » du jour. Il doit **tourner seul**, et nous devons pouvoir **prouver qu'il a tourné** : quand, combien d'articles, en combien de temps, quelles sources ont échoué.
 
 ## Périmètre
 
@@ -21,42 +21,47 @@ Chaque matin, nous voulons savoir de quoi parle la presse française, nationale 
 
 - **Coût nul :** aucun service payant, seulement des outils open source ou des offres gratuites.
 - **Données autorisées :** uniquement ce que les éditeurs exposent aux machines (flux RSS), dans le respect de leurs conditions d'utilisation.
-- **Autonomie :** aucune machine personnelle ne doit rester allumée pour que le pipeline tourne.
-- **Horaire :** la gazette doit être prête avant 8 h, heure de Paris.
-- **Reproductibilité :** tout doit pouvoir être relancé à l'identique, en local comme en CI.
+- **Hébergement :** tout tourne dans des conteneurs Docker sur une machine hôte allumée en permanence (*[machine à préciser]*).
+- **Horaire :** la gazette doit être prête avant 8 h, heure de Paris *(hypothèse à confirmer)*.
+- **Reproductibilité :** un `docker compose up` doit suffire pour remonter tout le pipeline à l'identique, sur n'importe quelle machine.
 
 ## Stack retenue et alternatives écartées
 
 | Brique | Retenu | Écarté, et pourquoi |
 |---|---|---|
-| Récupérer | Flux **RSS** officiels lus avec Python `feedparser`, **API GDELT** en secours | Scraping HTML : interdit par la consigne. NewsAPI : offre gratuite limitée au développement, 100 requêtes par jour |
-| Faire tourner | **GitHub Actions** planifié (cron), retries, relance manuelle avec une date en paramètre | Airflow ou Prefect auto-hébergés : il faut une machine allumée en permanence. AWS : payant |
-| Stocker | **Architecture médaillon**. Bronze : fichiers `.xml.gz` immuables. Silver et gold : **SQLite** (`gazette.db`) sur une branche `data` | DuckDB + Parquet : pensé pour l'analytique à grande échelle, superflu à ce volume. Delta Lake / Iceberg : trop complexes pour quelques centaines d'articles par jour. PostgreSQL gratuit hébergé : quotas et mise en veille |
-| Regrouper | **sentence-transformers** (modèle multilingue) + **HDBSCAN**, thèmes nommés par c-TF-IDF, avec TF-IDF + KMeans comme référence | TF-IDF seul : trop faible sur des textes courts (titres et chapôs), et il faut fixer le nombre de thèmes à l'avance |
-| Surveiller | Logs JSON, table `runs`, **issue GitHub ouverte automatiquement** en cas d'échec, **Healthchecks.io** pour l'alerte « n'a pas tourné », tableau de bord sur GitHub Pages | Prometheus + Grafana : à héberger soi-même. CloudWatch : payant au-delà de l'offre gratuite, et lié à AWS |
-| Infra en code | **Terraform** (provider GitHub) pour le dépôt, les secrets, les branches et Pages. Workflows YAML, Dockerfile et `docker-compose.yml` pour rejouer en local | OpenTofu : compatible mais moins répandu. CDK ou CloudFormation : liés à AWS |
+| Récupérer | Flux **RSS** officiels lus avec Python `feedparser`. API GDELT en secours si un flux tombe | Scraping HTML : interdit par la consigne. NewsAPI : offre gratuite limitée au développement |
+| Faire tourner | **Dagster** (open source) : chaque couche du médaillon est un *asset*. Un *schedule* lance le pipeline chaque matin à l'heure de Paris. Le partitionnement par jour permet de rejouer une date précise | Airflow : plus lourd, pensé en tâches plutôt qu'en données produites. Cron ou GitHub Actions : pas d'interface, pas de relance fine ni de suivi des données. Dagster+ : version hébergée payante |
+| Stocker | **Architecture médaillon**. Bronze : réponses RSS brutes (`.xml.gz`), immuables. Silver : articles nettoyés et dédoublonnés. Gold : thèmes du jour et indicateurs. Silver et gold dans **SQLite**, le tout sur un volume Docker | DuckDB + Parquet : pensé pour l'analytique à grande échelle, superflu à ce volume. Delta Lake / Iceberg : trop complexes pour quelques centaines d'articles par jour |
+| Regrouper | **Clustering** : embeddings multilingues (sentence-transformers) + HDBSCAN, thèmes nommés par leurs mots-clés. TF-IDF + KMeans comme référence | TF-IDF seul : trop faible sur des textes courts (titres et chapôs), et il faut fixer le nombre de thèmes à l'avance |
+| Surveiller | **Outils Dagster** : interface web (historique des runs, logs, données produites), métadonnées par asset (articles ingérés par source, temps d'ingestion, sources en échec), *asset checks* (ex. : au moins un article par source), *sensor* d'alerte en cas d'échec | Prometheus + Grafana : services de plus à héberger, superflus vu ce que Dagster fournit déjà |
+| Infra en code | **Docker** : un `Dockerfile` pour le code du pipeline, un `docker-compose.yml` qui décrit tous les services (interface Dagster, démon, code, PostgreSQL pour l'historique de Dagster, volumes de données) | Terraform : aucune ressource cloud à créer, donc superflu. Kubernetes : trop lourd pour une seule machine |
+
+### Stratégie en cas d'échec
+
+1. **Isoler** : chaque source est traitée séparément. Si un flux échoue, les autres continuent et l'échec est enregistré dans les métadonnées du run.
+2. **Réessayer** : une *RetryPolicy* Dagster relance automatiquement l'étape en échec (3 tentatives, délai croissant).
+3. **Se replier** : si un flux reste injoignable, on interroge GDELT filtré sur le domaine du journal.
+4. **Alerter** : un *sensor* Dagster envoie une notification (email ou webhook Discord) dès qu'un run échoue. Un *asset check* signale toute source à 0 article.
+5. **Rejouer** : depuis l'interface Dagster, on relance un run à partir de l'étape en échec, ou on rejoue une date précise grâce aux partitions journalières. Le dédoublonnage par `url_hash` garantit qu'aucun article n'est inséré deux fois.
 
 ## Risques
 
 | Risque | Parade |
 |---|---|
-| Un flux RSS change d'URL ou disparaît | Alerte si une source renvoie 0 article. Repli sur GDELT filtré par domaine. Mise à jour de `sources.csv` |
-| Le cron GitHub est retardé aux heures chargées | Lancement à 5 h UTC, qui laisse de la marge avant 8 h. Healthchecks alerte si aucun run n'a réussi |
-| Le cron est en UTC, d'où un décalage d'une heure au changement d'heure | Le documenter et choisir une heure qui convient dans les deux cas |
-| Le workflow est désactivé après 60 jours sans activité | Le commit quotidien sur la branche `data` maintient l'activité du dépôt. Healthchecks alerte si le pipeline s'arrête |
-| `gazette.db` est binaire : Git stocke une copie complète à chaque commit | Un seul commit par jour. Taille surveillée, avec nettoyage de l'historique si besoin |
-| Le fichier d'état Terraform contient des secrets | Il n'est jamais commité (`.gitignore`). Une seule personne lance `terraform apply` |
+| Un flux RSS change d'URL ou disparaît | *Asset check* qui alerte si une source renvoie 0 article. Repli sur GDELT. Mise à jour de `sources.csv` |
+| La machine hôte est éteinte ou redémarre : aucun run, et Dagster ne peut pas prévenir lui-même | Conteneurs en `restart: unless-stopped`. Signal « run terminé » envoyé à Healthchecks.io (gratuit), qui alerte s'il ne reçoit rien avant 8 h |
+| Un volume Docker est perdu (données ou historique) | Volumes nommés, et sauvegarde régulière du dossier de données (bronze + `gazette.db`) |
+| Le run échoue en cours de route | Voir « Stratégie en cas d'échec » |
 | Les CGU d'un éditeur interdisent la réutilisation | Lecture des CGU pour chaque source (colonne `conditions`). On ne garde que titre, extrait et lien vers l'original |
 | Les thèmes sont peu lisibles | Comparaison avec la référence TF-IDF + KMeans et relecture manuelle d'un échantillon |
+| Le modèle d'embeddings est lourd (quelques centaines de Mo) | Téléchargé une seule fois et mis en cache dans l'image Docker |
 
 ## Rôles dans l'équipe
 
 | Rôle | Responsable |
 |---|---|
 | Sources et collecte (RSS, GDELT, `sources.csv`) | *[Nom]* |
-| Orchestration et infra en code (GitHub Actions, Terraform) | *[Nom]* |
+| Orchestration et infra en code (Dagster, Docker) | *[Nom]* |
 | Stockage et modèle de données (médaillon, SQLite) | *[Nom]* |
-| Regroupement thématique (embeddings, HDBSCAN) | *[Nom]* |
-| Surveillance et qualité (métriques, alertes, tableau de bord) | *[Nom]* |
-
-Voir aussi : [`architecture.md`](architecture.md) · [`veille.md`](veille.md) · [`../sources.csv`](../sources.csv)
+| Regroupement thématique (clustering) | *[Nom]* |
+| Surveillance et qualité (métadonnées Dagster, asset checks, alertes) | *[Nom]* |
