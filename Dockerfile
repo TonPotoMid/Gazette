@@ -15,7 +15,8 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY dagster.yaml workspace.yaml ${DAGSTER_HOME}/
-COPY pyproject.toml sources.csv ./
+COPY pyproject.toml ./
+COPY docs/sources.csv ./docs/sources.csv
 COPY gazette ./gazette
 COPY tests ./tests
 

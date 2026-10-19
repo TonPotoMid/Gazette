@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 SOURCES_CSV = Path(
-    os.environ.get("GAZETTE_SOURCES_CSV", Path(__file__).resolve().parents[2] / "sources.csv")
+    os.environ.get("GAZETTE_SOURCES_CSV", Path(__file__).resolve().parents[2] / "docs" / "sources.csv")
 )
 
 
