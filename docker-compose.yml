@@ -38,7 +38,8 @@ services:
     command: ["dagster", "code-server", "start", "-h", "0.0.0.0", "-p", "4000", "-m", "gazette.definitions"]
     volumes:
       - dagster_storage:/opt/dagster/storage
-      - gazette_data:/data
+      # Données du pipeline visibles en local : ./data/<étape>/date=AAAA-MM-JJ/<journal>/
+      - ./data:/data
     healthcheck:
       test: ["CMD", "dagster", "api", "grpc-health-check", "-p", "4000"]
       interval: 10s
@@ -70,4 +71,3 @@ services:
 volumes:
   postgres_data:
   dagster_storage:
-  gazette_data:

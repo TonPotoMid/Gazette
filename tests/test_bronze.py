@@ -1,7 +1,8 @@
-import gzip
 import json
 
 import dagster as dg
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 import requests
 
@@ -58,15 +59,23 @@ def test_bronze_ecrit_les_flux_et_isole_les_echecs(tmp_path, monkeypatch):
     assert check.passed
 
     dossier = tmp_path / "bronze" / "date=2026-10-19" / "test"
-    [archive] = dossier.glob("une_*.xml.gz")
-    assert gzip.decompress(archive.read_bytes()) == RSS
-    contexte = json.loads(archive.with_name(archive.name.replace(".xml.gz", ".json")).read_text())
-    assert contexte["nb_articles"] == 2
+    [fichier] = dossier.glob("*.parquet")
+    assert fichier.name.startswith("une_")
+    table = pq.read_table(fichier)
+    assert table.column("title").to_pylist() == ["Premier", "Second"]
+    assert table.column("link").to_pylist() == ["https://exemple.fr/1", "https://exemple.fr/2"]
+    assert set(table.column("source").to_pylist()) == {"test"}
+    assert table.schema.metadata[b"gazette.xml_brut"] == RSS
+    assert json.loads(table.schema.metadata[b"gazette.http"])["statut_http"] == 200
+
+    articles = json.loads(fichier.with_suffix(".json").read_text(encoding="utf-8"))
+    assert [a["title"] for a in articles] == ["Premier", "Second"]
+    assert articles[0]["link"] == "https://exemple.fr/1"
 
 
 def test_bronze_ne_reecrit_jamais_un_fichier(tmp_path):
-    fichier = tmp_path / "a.xml.gz"
-    bronze.ecrire_immuable(fichier, b"original")
+    fichier = tmp_path / "a.parquet"
+    bronze.ecrire_immuable(fichier, bronze.en_parquet(pa.table({"x": [1]})))
     with pytest.raises(FileExistsError):
-        bronze.ecrire_immuable(fichier, b"autre")
-    assert fichier.read_bytes() == b"original"
+        bronze.ecrire_immuable(fichier, bronze.en_parquet(pa.table({"x": [2]})))
+    assert pq.read_table(fichier).column("x").to_pylist() == [1]
