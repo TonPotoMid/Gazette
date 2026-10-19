@@ -1,0 +1,9 @@
+nom,type,region,acces
+Le Monde,PQN,National,"RSS https://www.lemonde.fr/rss/une.xml (+ flux par rubrique)"
+Le Figaro,PQN,National,"RSS flux par rubrique https://www.lefigaro.fr/rss/figaro_<rubrique>.xml (ex. figaro_economie.xml)"
+Libération,PQN,National,"RSS https://www.liberation.fr/arc/outboundfeeds/rss-all/?outputType=xml
+Franceinfo,PQN,National,"RSS https://www.francetvinfo.fr/titres.rss (+ france.rss, politique.rss, monde.rss)"
+Ouest-France,PQR,"Bretagne, Pays de la Loire, Normandie","RSS https://www.ouest-france.fr/rss/une"
+Sud Ouest,PQR,Nouvelle-Aquitaine,"RSS https://www.sudouest.fr/essentiel/rss.xml (+ flux par département)"
+Nice-Matin,PQR,Provence-Alpes-Côte d’Azur,"RSS nicematin.com/rss"
+La Dépêche du Midi,PQR,	Occitanie,"RSS ladepeche.fr/rss.xml"
