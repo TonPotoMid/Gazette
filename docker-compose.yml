@@ -1,0 +1,73 @@
+# Pipeline complet : `docker compose up -d --build`, puis http://localhost:3000
+# Les identifiants Postgres ont des valeurs par défaut ; les surcharger dans un fichier .env.
+
+x-dagster: &dagster
+  build: .
+  image: gazette-dagster
+  restart: unless-stopped
+  environment:
+    DAGSTER_PG_HOST: postgres
+    DAGSTER_PG_USER: ${DAGSTER_PG_USER:-dagster}
+    DAGSTER_PG_PASSWORD: ${DAGSTER_PG_PASSWORD:-dagster}
+    DAGSTER_PG_DB: ${DAGSTER_PG_DB:-dagster}
+  volumes:
+    - dagster_storage:/opt/dagster/storage
+  depends_on:
+    postgres:
+      condition: service_healthy
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DAGSTER_PG_USER:-dagster}
+      POSTGRES_PASSWORD: ${DAGSTER_PG_PASSWORD:-dagster}
+      POSTGRES_DB: ${DAGSTER_PG_DB:-dagster}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Serveur de code : charge gazette.definitions et exécute les runs.
+  code:
+    <<: *dagster
+    command: ["dagster", "code-server", "start", "-h", "0.0.0.0", "-p", "4000", "-m", "gazette.definitions"]
+    volumes:
+      - dagster_storage:/opt/dagster/storage
+      - gazette_data:/data
+    healthcheck:
+      test: ["CMD", "dagster", "api", "grpc-health-check", "-p", "4000"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 20s
+
+  webserver:
+    <<: *dagster
+    command: ["dagster-webserver", "-h", "0.0.0.0", "-p", "3000", "-w", "/opt/dagster/dagster_home/workspace.yaml"]
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      code:
+        condition: service_healthy
+
+  # Démon : déclenche le schedule de 6 h et dépile la file des runs.
+  daemon:
+    <<: *dagster
+    command: ["dagster-daemon", "run", "-w", "/opt/dagster/dagster_home/workspace.yaml"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      code:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  dagster_storage:
+  gazette_data:
