@@ -1,6 +1,8 @@
 dagster==1.13.26
 dagster-webserver==1.13.26
 dagster-postgres==0.29.26
+# SQLAlchemy 2.1 passe les URL postgresql:// sur psycopg 3, incompatible avec dagster-postgres (psycopg2).
+sqlalchemy==2.0.55
 feedparser==6.0.14
 requests==2.34.2
 pytest==8.4.2
