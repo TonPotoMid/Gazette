@@ -29,6 +29,8 @@ import feedparser
 import pyarrow as pa
 import pyarrow.parquet as pq
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 from gazette.bronze.sources import Flux, Source, charger_sources
 from gazette.partitions import partitions_quotidiennes
@@ -36,6 +38,7 @@ from gazette.partitions import partitions_quotidiennes
 DATA_DIR = Path(os.environ.get("GAZETTE_DATA_DIR", "data"))
 USER_AGENT = "GazetteBot/0.1 (projet etudiant M2Ops Efrei; lecture des flux RSS publics)"
 TIMEOUT_S = 30
+HTTP_RETRIES = 3
 CHECK_AU_MOINS_UN_ARTICLE = "au_moins_un_article"
 
 relances = dg.RetryPolicy(max_retries=3, delay=30, backoff=dg.Backoff.EXPONENTIAL)
@@ -145,6 +148,33 @@ def table_bronze(
     return pa.Table.from_pylist(lignes, schema=schema)
 
 
+def creer_session() -> requests.Session:
+    session = requests.Session()
+    retry = Retry(
+        total=HTTP_RETRIES,
+        connect=HTTP_RETRIES,
+        read=HTTP_RETRIES,
+        status=HTTP_RETRIES,
+        backoff_factor=1,
+        status_forcelist=(503,),
+        allowed_methods=frozenset({"GET"}),
+        raise_on_status=False,
+    )
+    adapter = HTTPAdapter(max_retries=retry)
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+    return session
+
+
+def erreur_reessayable(erreur: requests.RequestException) -> bool:
+    """Un 404 est définitif ; les erreurs réseau et autres statuts restent retentables."""
+    return not (
+        isinstance(erreur, requests.HTTPError)
+        and erreur.response is not None
+        and erreur.response.status_code == 404
+    )
+
+
 def collecter_flux(
     session: requests.Session, source: str, flux: Flux, dossier: Path, cles_connues: set[str]
 ) -> dict:
@@ -210,7 +240,8 @@ def construire_asset_bronze(source: Source) -> dg.AssetsDefinition:
         debut = time.monotonic()
         cles_connues = cles_deja_ecrites(source.slug)
         collectes, echecs = [], []
-        with requests.Session() as session:
+        erreurs_reessayables = False
+        with creer_session() as session:
             session.headers["User-Agent"] = USER_AGENT
             for flux in source.flux:
                 try:
@@ -220,12 +251,14 @@ def construire_asset_bronze(source: Source) -> dg.AssetsDefinition:
                 except requests.RequestException as erreur:
                     context.log.warning(f"Flux {flux.nom} ({flux.url}) en échec : {erreur}")
                     echecs.append(f"{flux.nom} : {erreur}")
+                    erreurs_reessayables |= erreur_reessayable(erreur)
         duree_s = round(time.monotonic() - debut, 2)
 
         if not collectes:
             raise dg.Failure(
                 description=f"Aucun flux de {source.nom} n'a répondu.",
                 metadata={"flux_en_echec": echecs, "duree_s": duree_s},
+                allow_retries=erreurs_reessayables,
             )
 
         nb_recus = sum(c["nb_recus"] for c in collectes)

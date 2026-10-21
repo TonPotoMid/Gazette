@@ -33,6 +33,23 @@ def reponse_rss(url: str, contenu: bytes = RSS) -> requests.Response:
     return reponse
 
 
+def erreur_http(statut: int) -> requests.HTTPError:
+    reponse = requests.Response()
+    reponse.status_code = statut
+    return requests.HTTPError(response=reponse)
+
+
+def test_erreurs_http_404_permanent_503_reessayable():
+    assert not bronze.erreur_reessayable(erreur_http(404))
+    assert bronze.erreur_reessayable(erreur_http(503))
+    assert bronze.erreur_reessayable(requests.ConnectionError("injoignable"))
+
+    with bronze.creer_session() as session:
+        retry = session.get_adapter("https://").max_retries
+        assert retry.status_forcelist == (503,)
+        assert retry.status == bronze.HTTP_RETRIES
+
+
 def test_sources_csv_valide():
     sources = charger_sources()
     assert len(sources) == 8
