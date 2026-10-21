@@ -10,6 +10,11 @@ Arborescence produite :
 Chaque fichier contient une ligne par article, champs RSS tels que le flux les donne
 (aucun nettoyage : c'est le rôle de silver). La réponse XML complète et le contexte HTTP
 sont conservés dans les métadonnées du fichier (clés gazette.xml_brut et gazette.http).
+
+Pas de doublon : un article déjà écrit pour (source, lien) n'est pas réécrit, quel que soit le
+jour ou le flux où il avait été collecté (l'id RSS sert de clé quand il n'a pas de lien). Les
+clés connues sont relues dans les Parquet existants. Un flux sans aucun article nouveau
+n'écrit aucun fichier : les articles ignorés sont comptés dans les métadonnées du run.
 """
 
 import json
@@ -72,7 +77,47 @@ def en_json(table: pa.Table) -> bytes:
     return json.dumps(table.to_pylist(), ensure_ascii=False, indent=2, default=str).encode("utf-8")
 
 
-def table_bronze(source: str, flux: Flux, recu_le: datetime, xml: bytes, contexte: dict) -> pa.Table:
+def cle_article(entree: dict) -> str | None:
+    """Clé naturelle d'un article au sein d'une source : son lien, à défaut son id RSS."""
+    return entree.get("link") or entree.get("id")
+
+
+def cles_deja_ecrites(slug: str) -> set[str]:
+    """Clés des articles déjà présents dans le bronze de cette source, tous jours confondus."""
+    cles = set()
+    for fichier in (DATA_DIR / "bronze").glob(f"date=*/{slug}/*.parquet"):
+        for ligne in pq.read_table(fichier, columns=["link", "id"]).to_pylist():
+            cle = ligne["link"] or ligne["id"]
+            if cle:
+                cles.add(cle)
+    return cles
+
+
+def articles_nouveaux(entrees: list, cles_connues: set[str]) -> list[tuple[int, dict]]:
+    """Les (rang, article) jamais écrits ; leurs clés rejoignent `cles_connues`.
+
+    Le rang reste celui de l'article dans le flux. Un article sans lien ni id ne peut pas
+    être reconnu : il est toujours gardé.
+    """
+    nouveaux = []
+    for rang, entree in enumerate(entrees):
+        cle = cle_article(entree)
+        if cle is not None:
+            if cle in cles_connues:
+                continue
+            cles_connues.add(cle)
+        nouveaux.append((rang, entree))
+    return nouveaux
+
+
+def table_bronze(
+    source: str,
+    flux: Flux,
+    recu_le: datetime,
+    xml: bytes,
+    contexte: dict,
+    articles: list[tuple[int, dict]],
+) -> pa.Table:
     lignes = [
         {
             "source": source,
@@ -89,7 +134,7 @@ def table_bronze(source: str, flux: Flux, recu_le: datetime, xml: bytes, context
             "author": entree.get("author"),
             "tags": [t.get("term") for t in entree.get("tags", [])],
         }
-        for rang, entree in enumerate(feedparser.parse(xml).entries)
+        for rang, entree in articles
     ]
     schema = SCHEMA_BRONZE.with_metadata(
         {
@@ -100,7 +145,9 @@ def table_bronze(source: str, flux: Flux, recu_le: datetime, xml: bytes, context
     return pa.Table.from_pylist(lignes, schema=schema)
 
 
-def collecter_flux(session: requests.Session, source: str, flux: Flux, dossier: Path) -> dict:
+def collecter_flux(
+    session: requests.Session, source: str, flux: Flux, dossier: Path, cles_connues: set[str]
+) -> dict:
     reponse = session.get(flux.url, timeout=TIMEOUT_S)
     reponse.raise_for_status()
     recu_le = datetime.now(timezone.utc)
@@ -115,12 +162,22 @@ def collecter_flux(session: requests.Session, source: str, flux: Flux, dossier: 
         "recu_le": recu_le.isoformat(),
         "octets": len(reponse.content),
     }
-    table = table_bronze(source, flux, recu_le, reponse.content, contexte)
+    entrees = feedparser.parse(reponse.content).entries
+    articles = articles_nouveaux(entrees, cles_connues)
+    compteurs = {
+        "nb_recus": len(entrees),
+        "nb_ecrits": len(articles),
+        "nb_ignores": len(entrees) - len(articles),
+    }
+    if not articles:
+        return {**contexte, **compteurs, "fichier": None}
+
+    table = table_bronze(source, flux, recu_le, reponse.content, contexte, articles)
     base = dossier / f"{flux.nom}_{recu_le:%Y%m%dT%H%M%S%fZ}"
     fichier = Path(f"{base}.parquet")
     ecrire_immuable(fichier, en_parquet(table))
     ecrire_immuable(Path(f"{base}.json"), en_json(table))
-    return {**contexte, "nb_articles": table.num_rows, "fichier": str(fichier)}
+    return {**contexte, **compteurs, "fichier": str(fichier)}
 
 
 def construire_asset_bronze(source: Source) -> dg.AssetsDefinition:
@@ -137,7 +194,7 @@ def construire_asset_bronze(source: Source) -> dg.AssetsDefinition:
             dg.AssetCheckSpec(
                 CHECK_AU_MOINS_UN_ARTICLE,
                 asset=cle,
-                description="La source a renvoyé au moins un article.",
+                description="La source a renvoyé au moins un article (même déjà collecté).",
             )
         ],
     )
@@ -151,12 +208,15 @@ def construire_asset_bronze(source: Source) -> dg.AssetsDefinition:
 
         dossier = DATA_DIR / "bronze" / f"date={date}" / source.slug
         debut = time.monotonic()
+        cles_connues = cles_deja_ecrites(source.slug)
         collectes, echecs = [], []
         with requests.Session() as session:
             session.headers["User-Agent"] = USER_AGENT
             for flux in source.flux:
                 try:
-                    collectes.append(collecter_flux(session, source.slug, flux, dossier))
+                    collectes.append(
+                        collecter_flux(session, source.slug, flux, dossier, cles_connues)
+                    )
                 except requests.RequestException as erreur:
                     context.log.warning(f"Flux {flux.nom} ({flux.url}) en échec : {erreur}")
                     echecs.append(f"{flux.nom} : {erreur}")
@@ -168,24 +228,31 @@ def construire_asset_bronze(source: Source) -> dg.AssetsDefinition:
                 metadata={"flux_en_echec": echecs, "duree_s": duree_s},
             )
 
-        nb_articles = sum(c["nb_articles"] for c in collectes)
-        context.log.info(f"{source.nom} : {nb_articles} articles en {duree_s} s")
+        nb_recus = sum(c["nb_recus"] for c in collectes)
+        nb_ecrits = sum(c["nb_ecrits"] for c in collectes)
+        nb_ignores = sum(c["nb_ignores"] for c in collectes)
+        context.log.info(
+            f"{source.nom} : {nb_recus} reçus, {nb_ecrits} écrits, {nb_ignores} ignorés "
+            f"en {duree_s} s"
+        )
         return dg.MaterializeResult(
             metadata={
-                "nb_articles": nb_articles,
+                "nb_recus": nb_recus,
+                "nb_ecrits": nb_ecrits,
+                "nb_ignores": nb_ignores,
                 "nb_flux_ok": len(collectes),
                 "nb_flux_en_echec": len(echecs),
                 "flux_en_echec": echecs,
                 "duree_s": duree_s,
                 "octets": sum(c["octets"] for c in collectes),
-                "fichiers": [c["fichier"] for c in collectes],
+                "fichiers": [c["fichier"] for c in collectes if c["fichier"]],
             },
             check_results=[
                 dg.AssetCheckResult(
                     check_name=CHECK_AU_MOINS_UN_ARTICLE,
-                    passed=nb_articles > 0,
+                    passed=nb_recus > 0,
                     severity=dg.AssetCheckSeverity.ERROR,
-                    metadata={"nb_articles": nb_articles},
+                    metadata={"nb_recus": nb_recus},
                 )
             ],
         )
