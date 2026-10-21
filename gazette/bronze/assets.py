@@ -5,7 +5,7 @@ de tourner et que chaque source ait ses propres relances et son propre check.
 
 Arborescence produite :
     $GAZETTE_DATA_DIR/bronze/date=AAAA-MM-JJ/<slug>/<flux>_<horodatage UTC>.parquet
-    $GAZETTE_DATA_DIR/bronze/date=AAAA-MM-JJ/<slug>/<flux>_<horodatage UTC>.json     (mêmes articles, lisibles)
+    $GAZETTE_DATA_DIR/bronze/date=AAAA-MM-JJ/<slug>/<flux>_<horodatage UTC>.json (idem, lisible)
 
 Chaque fichier contient une ligne par article, champs RSS tels que le flux les donne
 (aucun nettoyage : c'est le rôle de silver). La réponse XML complète et le contexte HTTP
@@ -15,7 +15,7 @@ sont conservés dans les métadonnées du fichier (clés gazette.xml_brut et gaz
 import json
 import os
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -72,7 +72,9 @@ def en_json(table: pa.Table) -> bytes:
     return json.dumps(table.to_pylist(), ensure_ascii=False, indent=2, default=str).encode("utf-8")
 
 
-def table_bronze(source: str, flux: Flux, recu_le: datetime, xml: bytes, contexte: dict) -> pa.Table:
+def table_bronze(
+    source: str, flux: Flux, recu_le: datetime, xml: bytes, contexte: dict
+) -> pa.Table:
     lignes = [
         {
             "source": source,
@@ -103,7 +105,7 @@ def table_bronze(source: str, flux: Flux, recu_le: datetime, xml: bytes, context
 def collecter_flux(session: requests.Session, source: str, flux: Flux, dossier: Path) -> dict:
     reponse = session.get(flux.url, timeout=TIMEOUT_S)
     reponse.raise_for_status()
-    recu_le = datetime.now(timezone.utc)
+    recu_le = datetime.now(UTC)
 
     contexte = {
         "url": flux.url,
@@ -131,7 +133,9 @@ def construire_asset_bronze(source: Source) -> dg.AssetsDefinition:
         group_name="bronze",
         partitions_def=partitions_quotidiennes,
         retry_policy=relances,
-        description=f"Flux RSS bruts de {source.nom} ({source.type}, {source.region}), Parquet immuable.",
+        description=(
+            f"Flux RSS bruts de {source.nom} ({source.type}, {source.region}), Parquet immuable."
+        ),
         metadata={"journal": source.nom, "type": source.type, "region": source.region},
         check_specs=[
             dg.AssetCheckSpec(

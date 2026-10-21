@@ -46,7 +46,10 @@ def test_bronze_ecrit_les_flux_et_isole_les_echecs(tmp_path, monkeypatch):
         nom="Journal test",
         type="PQN",
         region="National",
-        flux=(Flux("une", "https://exemple.fr/une.xml"), Flux("panne", "https://exemple.fr/panne.xml")),
+        flux=(
+            Flux("une", "https://exemple.fr/une.xml"),
+            Flux("panne", "https://exemple.fr/panne.xml"),
+        ),
     )
 
     resultat = dg.materialize([bronze.construire_asset_bronze(source)], partition_key="2026-10-19")

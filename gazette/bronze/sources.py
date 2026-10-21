@@ -6,7 +6,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 SOURCES_CSV = Path(
-    os.environ.get("GAZETTE_SOURCES_CSV", Path(__file__).resolve().parents[2] / "docs" / "sources.csv")
+    os.environ.get(
+        "GAZETTE_SOURCES_CSV", Path(__file__).resolve().parents[2] / "docs" / "sources.csv"
+    )
 )
 
 
@@ -38,7 +40,7 @@ def charger_sources(chemin: Path = SOURCES_CSV) -> list[Source]:
             nom=lignes[0]["nom"],
             type=lignes[0]["type"],
             region=lignes[0]["region"],
-            flux=tuple(Flux(nom=l["flux"], url=l["url"]) for l in lignes),
+            flux=tuple(Flux(nom=ligne["flux"], url=ligne["url"]) for ligne in lignes),
         )
         for slug, lignes in lignes_par_slug.items()
     ]
