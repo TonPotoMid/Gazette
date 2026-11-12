@@ -3,6 +3,7 @@ import dagster as dg
 from gazette.bronze import assets_bronze
 from gazette.silver.assets import assets_silver, controles_silver
 from gazette.silver.declencheurs import declencheurs_silver
+from gazette.surveillance import capteurs_alertes
 
 job_quotidien = dg.define_asset_job(
     "gazette_quotidienne",
@@ -29,5 +30,5 @@ defs = dg.Definitions(
     asset_checks=controles_silver,
     jobs=[job_quotidien, job_silver],
     schedules=[schedule_quotidien],
-    sensors=declencheurs_silver(job_quotidien, job_silver),
+    sensors=[*declencheurs_silver(job_quotidien, job_silver), *capteurs_alertes],
 )

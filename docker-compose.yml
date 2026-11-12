@@ -10,6 +10,10 @@ x-dagster: &dagster
     DAGSTER_PG_USER: ${DAGSTER_PG_USER:-dagster}
     DAGSTER_PG_PASSWORD: ${DAGSTER_PG_PASSWORD:-dagster}
     DAGSTER_PG_DB: ${DAGSTER_PG_DB:-dagster}
+    # Alertes : voir .env (l'URL du webhook est un secret, elle n'est jamais dans le dépôt).
+    GAZETTE_ALERT_WEBHOOK_URL: ${GAZETTE_ALERT_WEBHOOK_URL:-}
+    GAZETTE_TAUX_REJET_MAX: ${GAZETTE_TAUX_REJET_MAX:-0.8}
+    GAZETTE_DAGSTER_URL: ${GAZETTE_DAGSTER_URL:-http://localhost:3000}
   volumes:
     - dagster_storage:/opt/dagster/storage
   depends_on:
