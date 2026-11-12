@@ -4,6 +4,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from gazette import quality
+from gazette.silver import regles
 
 
 def ecrire_bronze(racine, jour: str, source: str, nb_articles: int, nom: str = "une") -> None:
@@ -73,7 +74,7 @@ def ecrire_articles(racine, jour: str, source: str, titres: list[str]) -> None:
             ),
             "title": titres,
             "link": [f"https://exemple.fr/{source}/{i}" for i in range(n)],
-            "summary": ["Un extrait."] * n,
+            "summary": [f"Un extrait de {source} numéro {i}." for i in range(n)],
             "published": ["Thu, 12 Nov 2026 05:00:00 +0100"] * n,
             "tags": pa.array([[]] * n, pa.list_(pa.string())),
         }
@@ -81,35 +82,47 @@ def ecrire_articles(racine, jour: str, source: str, titres: list[str]) -> None:
     pq.write_table(table, dossier / "une.parquet")
 
 
-def test_rapport_pollueurs_liste_les_dix_avec_le_compte_par_source(tmp_path):
+def test_rapport_regles_compte_les_rejets_par_regle_et_par_source(tmp_path):
     ecrire_articles(
-        tmp_path, "2026-11-12", "le_monde", ["HOROSCOPE du jour : Bélier", "Un autre titre"]
+        tmp_path, "2026-11-12", "le_monde", ["Horoscope du jour : Bélier", "Un titre ordinaire"]
     )
+    ecrire_articles(tmp_path, "2026-11-12", "liberation", ["Un autre titre ordinaire"])
 
-    texte = quality.rapport_pollueurs(quality.lire_bronze(tmp_path))
+    texte = quality.rapport_regles(quality.lire_bronze(tmp_path))
 
     lignes = texte.splitlines()
-    assert lignes[0] == "Les dix pollueurs (2 articles)"
-    assert [ligne.split()[0] for ligne in lignes[1:11]] == [str(n) for n in range(1, 11)]
-    horoscope = next(ligne for ligne in lignes if ligne.split()[0:2] == ["2", "Horoscope"])
+    assert lignes[0] == "Règles d'exclusion (3 articles : 2 gardés, 1 rejetés, 33.3%)"
+    assert [ligne.split()[0] for ligne in lignes[1:11]] == [i for i, _ in regles.regles()]
+    horoscope = next(ligne for ligne in lignes if ligne.startswith("R02_horoscope"))
     assert horoscope.split()[-3:] == ["1", "le_monde", "1"]
     assert "Sensibilité du seuil de ressemblance" in texte
 
 
-def test_main_affiche_le_bilan_et_les_pollueurs_sans_rien_ecrire(tmp_path, capsys):
-    ecrire_articles(tmp_path / "data", "2026-11-12", "le_monde", ["Un titre", "Un autre titre"])
+def test_rapport_regles_cherche_les_doublons_jour_par_jour(tmp_path):
+    for jour in ("2026-11-11", "2026-11-12"):
+        ecrire_articles(tmp_path, jour, "le_monde", ["Le même titre exactement ici"])
+
+    texte = quality.rapport_regles(quality.lire_bronze(tmp_path))
+
+    assert texte.splitlines()[0] == "Règles d'exclusion (2 articles : 2 gardés, 0 rejetés, 0.0%)"
+
+
+def test_main_affiche_le_bilan_et_les_regles_sans_rien_ecrire(tmp_path, capsys):
+    ecrire_articles(
+        tmp_path / "data", "2026-11-12", "le_monde", ["Un titre ordinaire", "Un autre titre"]
+    )
     avant = sorted(tmp_path.rglob("*"))
 
     code = quality.main(["--data-dir", str(tmp_path / "data")])
 
     sortie = capsys.readouterr().out
     assert code == 0
-    assert "Jours collectés" in sortie and "Les dix pollueurs (2 articles)" in sortie
+    assert "Jours collectés" in sortie and "Règles d'exclusion (2 articles" in sortie
     assert sorted(tmp_path.rglob("*")) == avant
 
 
-def test_main_sans_donnees_n_affiche_pas_de_pollueurs(tmp_path, capsys):
+def test_main_sans_donnees_n_affiche_pas_les_regles(tmp_path, capsys):
     quality.main(["--data-dir", str(tmp_path)])
 
     sortie = capsys.readouterr().out
-    assert "n'a jamais tourné" in sortie and "pollueurs" not in sortie
+    assert "n'a jamais tourné" in sortie and "Règles d'exclusion" not in sortie

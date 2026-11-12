@@ -7,10 +7,12 @@ from zoneinfo import ZoneInfo
 
 import pyarrow.parquet as pq
 
-from gazette import pollueurs
 from gazette.bronze.sources import charger_sources
+from gazette.silver import regles
+from gazette.silver.article import Article, depuis_bronze
 
 COLONNES = ["source", "recu_le", "title", "link", "summary", "published", "tags"]
+SEUILS_SENSIBILITE = (0.8, 0.7, 0.6)
 
 
 def compter_bronze(racine: Path) -> dict[date, dict[str, int]]:
@@ -101,31 +103,57 @@ def rapport(comptes: dict[date, dict[str, int]], slugs: list[str], aujourdhui: d
     return "\n".join(lignes)
 
 
-def rapport_pollueurs(lignes: list[dict]) -> str:
-    """Les dix pollueurs comptés sur le bronze, en texte, pour le terminal."""
-    mesures = pollueurs.mesurer(lignes)
-    largeur = max(len(m.nom) for m in mesures)
-    out = [f"Les dix pollueurs ({len(lignes)} articles)"]
-    for m in mesures:
+def articles_par_jour(lignes: list[dict]) -> dict[str, list[Article]]:
+    """Les articles du bronze, normalisés, rangés par jour de collecte (une partition silver)."""
+    par_jour: dict[str, list[Article]] = defaultdict(list)
+    for ligne in lignes:
+        par_jour[ligne["jour"]].append(depuis_bronze(ligne))
+    return dict(sorted(par_jour.items()))
+
+
+def rapport_regles(lignes: list[dict], ordre_sources: tuple[str, ...] = ()) -> str:
+    """Les règles d'exclusion appliquées au bronze, jour par jour : rejets par règle et source."""
+    par_jour = articles_par_jour(lignes)
+    rejets = [
+        rejet
+        for articles in par_jour.values()
+        for rejet in regles.appliquer_regles(articles, ordre_sources).rejets
+    ]
+    total = len(lignes)
+    taux = len(rejets) / total if total else 0
+    out = [
+        f"Règles d'exclusion ({total} articles : {total - len(rejets)} gardés, "
+        f"{len(rejets)} rejetés, {taux:.1%})"
+    ]
+    nom_max = max(len(nom) for _, nom in regles.regles())
+    for identifiant, nom in regles.regles():
+        concernes = [r for r in rejets if r.regle == identifiant]
         par_source = ", ".join(
-            f"{s} {n}" for s, n in Counter(x["source"] for x in m.lignes).most_common()
+            f"{s} {n}" for s, n in Counter(r.article.source for r in concernes).most_common()
         )
-        groupes = f"({len(m.groupes)} groupes) " if m.groupes else ""
-        detail = f"{groupes}{par_source}"
-        out.append(f"{m.numero:>2}  {m.nom.ljust(largeur)}  {len(m.lignes):>4}  {detail}".rstrip())
+        out.append(
+            f"{identifiant:<20}  {nom.ljust(nom_max)}  {len(concernes):>4}  {par_source}".rstrip()
+        )
 
     out += ["", "Sensibilité du seuil de ressemblance entre deux titres (part de mots en commun)"]
     out.append("seuil  groupes  articles  sources max")
-    out += [
-        f"{seuil:>5.0%}  {groupes:>7}  {articles:>8}  {max_sources:>11}"
-        for seuil, groupes, articles, max_sources in pollueurs.sensibilite(lignes)
-    ]
+    for seuil in SEUILS_SENSIBILITE:
+        groupes = [
+            [articles[p] for p in groupe]
+            for articles in par_jour.values()
+            for groupe in regles.titres_proches(articles, seuil)
+        ]
+        sources_max = max((len({a.source for a in g}) for g in groupes), default=0)
+        out.append(
+            f"{seuil:>5.0%}  {len(groupes):>7}  {sum(len(g) for g in groupes):>8}  "
+            f"{sources_max:>11}"
+        )
     return "\n".join(out)
 
 
 def main(argv: list[str] | None = None) -> int:
     parseur = argparse.ArgumentParser(
-        description="Bilan de collecte et dix pollueurs du bronze (affichage seulement)"
+        description="Bilan de collecte et règles d'exclusion sur le bronze (affichage seulement)"
     )
     parseur.add_argument(
         "--data-dir",
@@ -141,7 +169,7 @@ def main(argv: list[str] | None = None) -> int:
     print(rapport(comptes, slugs, aujourdhui))
     if comptes:
         print()
-        print(rapport_pollueurs(lire_bronze(args.data_dir)))
+        print(rapport_regles(lire_bronze(args.data_dir), tuple(slugs)))
     return 0
 
 
