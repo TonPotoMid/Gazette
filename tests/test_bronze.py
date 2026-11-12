@@ -1,4 +1,6 @@
 import json
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import dagster as dg
 import pyarrow as pa
@@ -6,7 +8,9 @@ import pyarrow.parquet as pq
 import pytest
 import requests
 
+from gazette import reactiver
 from gazette.bronze import assets as bronze
+from gazette.bronze.etat import EtatFlux, ecrire_etat, lire_etat
 from gazette.bronze.sources import Flux, Source, charger_sources
 
 RSS = b"""<?xml version="1.0" encoding="UTF-8"?>
@@ -39,10 +43,10 @@ def erreur_http(statut: int) -> requests.HTTPError:
     return requests.HTTPError(response=reponse)
 
 
-def test_erreurs_http_404_permanent_503_reessayable():
-    assert not bronze.erreur_reessayable(erreur_http(404))
-    assert bronze.erreur_reessayable(erreur_http(503))
-    assert bronze.erreur_reessayable(requests.ConnectionError("injoignable"))
+def test_erreurs_http_404_permanent_503_transitoire():
+    assert not bronze.est_transitoire(erreur_http(404))
+    assert bronze.est_transitoire(erreur_http(503))
+    assert bronze.est_transitoire(requests.ConnectionError("injoignable"))
 
     with bronze.creer_session() as session:
         retry = session.get_adapter("https://").max_retries
@@ -82,8 +86,7 @@ def test_bronze_ecrit_les_flux_et_isole_les_echecs(tmp_path, monkeypatch):
     assert materialisation.metadata["nb_ecrits"].value == 2
     assert materialisation.metadata["nb_ignores"].value == 0
     assert materialisation.metadata["nb_flux_en_echec"].value == 1
-    [check] = resultat.get_asset_check_evaluations()
-    assert check.passed
+    assert all(check.passed for check in resultat.get_asset_check_evaluations())
 
     dossier = tmp_path / "bronze" / "date=2026-10-19" / "test"
     [fichier] = dossier.glob("*.parquet")
@@ -100,8 +103,14 @@ def test_bronze_ecrit_les_flux_et_isole_les_echecs(tmp_path, monkeypatch):
     assert articles[0]["link"] == "https://exemple.fr/1"
 
 
-def collecter(source: Source, partition: str) -> dg.ExecuteInProcessResult:
-    return dg.materialize([bronze.construire_asset_bronze(source)], partition_key=partition)
+def collecter(
+    source: Source, partition: str, raise_on_error: bool = True
+) -> dg.ExecuteInProcessResult:
+    return dg.materialize(
+        [bronze.construire_asset_bronze(source)],
+        partition_key=partition,
+        raise_on_error=raise_on_error,
+    )
 
 
 def compteurs(resultat: dg.ExecuteInProcessResult, slug: str) -> dict[str, int]:
@@ -140,8 +149,8 @@ def test_deux_passages_zero_doublon(tmp_path, monkeypatch):
     assert compteurs(second, "test") == {"nb_recus": 2, "nb_ecrits": 0, "nb_ignores": 2}
     assert sorted(tmp_path.glob("bronze/**/*")) == fichiers
     assert len(articles_ecrits(tmp_path)) == 2
-    [check] = second.get_asset_check_evaluations()
-    assert check.passed  # la source répond : 0 écrit n'est pas une panne
+    # la source répond : 0 écrit n'est pas une panne
+    assert all(check.passed for check in second.get_asset_check_evaluations())
 
     # Le lendemain, le flux garde les anciens articles et en ajoute un : seul celui-là est écrit.
     flux_distant["contenu"] = rss_de(
@@ -187,6 +196,168 @@ def test_cle_de_dedoublonnage_repli_sur_l_id_puis_jamais_ignore():
 
     assert [rang for rang, _ in gardes] == [0, 2, 4, 5]
     assert connues == {"https://exemple.fr/1", "b"}
+
+
+class ServeurLocal:
+    """Vrai serveur HTTP local. `statuts[chemin]` : les statuts à renvoyer, dans l'ordre ; une fois
+    la liste épuisée, il répond 200 avec le flux RSS. `appels` garde chaque chemin demandé."""
+
+    def __init__(self) -> None:
+        self.statuts: dict[str, list[int]] = {}
+        self.appels: list[str] = []
+        serveur = self
+
+        class Gestionnaire(BaseHTTPRequestHandler):
+            def do_GET(self):
+                serveur.appels.append(self.path)
+                programmes = serveur.statuts.get(self.path, [])
+                statut = programmes.pop(0) if programmes else 200
+                corps = RSS if statut == 200 else b"erreur"
+                self.send_response(statut)
+                self.send_header("Content-Type", "application/rss+xml")
+                self.send_header("Content-Length", str(len(corps)))
+                self.end_headers()
+                self.wfile.write(corps)
+
+            def log_message(self, *args):
+                pass
+
+        self.http = ThreadingHTTPServer(("127.0.0.1", 0), Gestionnaire)
+        self.url = f"http://127.0.0.1:{self.http.server_port}"
+        threading.Thread(target=self.http.serve_forever, daemon=True).start()
+
+    def source(self) -> Source:
+        return Source("test", "Journal test", "PQN", "National", (Flux("une", f"{self.url}/une"),))
+
+
+@pytest.fixture
+def serveur(tmp_path, monkeypatch):
+    monkeypatch.setattr(bronze, "DATA_DIR", tmp_path)
+    # Mêmes relances que la prod, sans les secondes d'attente entre deux essais ou deux requêtes.
+    monkeypatch.setattr(bronze, "HTTP_BACKOFF_S", 0)
+    monkeypatch.setattr(
+        bronze,
+        "relances",
+        dg.RetryPolicy(max_retries=3, delay=0.01, backoff=dg.Backoff.EXPONENTIAL),
+    )
+    serveur = ServeurLocal()
+    yield serveur
+    serveur.http.shutdown()
+    serveur.http.server_close()
+
+
+def verdicts(resultat: dg.ExecuteInProcessResult) -> dict[str, bool]:
+    return {c.check_name: c.passed for c in resultat.get_asset_check_evaluations()}
+
+
+def test_source_en_panne_503_reessayee_par_la_session_http(serveur, tmp_path):
+    serveur.statuts["/une"] = [503, 503]
+
+    resultat = collecter(serveur.source(), "2026-10-19")
+
+    assert resultat.success
+    assert serveur.appels == ["/une"] * 3  # deux 503, puis le 200, dans un seul essai Dagster
+    assert compteurs(resultat, "test") == {"nb_recus": 2, "nb_ecrits": 2, "nb_ignores": 0}
+    assert len(articles_ecrits(tmp_path)) == 2
+    assert lire_etat(tmp_path, "test", "une") == EtatFlux(
+        actif=True,
+        echecs_consecutifs=0,
+        derniere_reussite=lire_etat(tmp_path, "test", "une").derniere_reussite,
+    )
+
+
+def test_source_en_panne_503_reessayee_par_dagster_quand_la_session_abandonne(serveur, tmp_path):
+    # La session HTTP abandonne après ses 4 requêtes : c'est la RetryPolicy de Dagster qui reprend.
+    serveur.statuts["/une"] = [503] * (bronze.HTTP_RETRIES + 1)
+
+    resultat = collecter(serveur.source(), "2026-10-19")
+
+    assert resultat.success
+    assert len(serveur.appels) == bronze.HTTP_RETRIES + 2
+    assert len(articles_ecrits(tmp_path)) == 2
+    assert lire_etat(tmp_path, "test", "une").echecs_consecutifs == 0
+
+
+def test_source_en_panne_503_sans_fin_epuise_les_relances_sans_sommeil(serveur, tmp_path):
+    serveur.statuts["/une"] = [503] * 100
+
+    resultat = collecter(serveur.source(), "2026-10-19", raise_on_error=False)
+
+    assert not resultat.success
+    # (requête initiale + relances HTTP) x (essai initial + 3 relances Dagster)
+    assert len(serveur.appels) == (bronze.HTTP_RETRIES + 1) * 4
+    assert articles_ecrits(tmp_path) == []
+    # Une panne passagère de l'éditeur ne met pas le flux en sommeil.
+    assert lire_etat(tmp_path, "test", "une").actif
+    assert lire_etat(tmp_path, "test", "une").echecs_consecutifs == 0
+
+
+def test_source_en_panne_404_trois_echecs_de_suite_mettent_le_flux_en_sommeil(serveur, tmp_path):
+    serveur.statuts["/une"] = [404] * 20
+
+    for jour, echecs in (("2026-10-19", 1), ("2026-10-20", 2), ("2026-10-21", 3)):
+        resultat = collecter(serveur.source(), jour, raise_on_error=False)
+        assert not resultat.success
+        etat = lire_etat(tmp_path, "test", "une")
+        assert etat.echecs_consecutifs == echecs
+        assert "404" in etat.derniere_erreur
+    assert len(serveur.appels) == 3  # un 404 n'est pas relancé : un seul essai par run
+    assert not lire_etat(tmp_path, "test", "une").actif
+
+    # Le run suivant ne contacte plus le flux, et le dit : le check sources_actives échoue.
+    suivant = collecter(serveur.source(), "2026-10-21")
+    assert suivant.success
+    assert len(serveur.appels) == 3
+    assert verdicts(suivant)["sources_actives"] is False
+    materialisation = suivant.asset_materializations_for_node("bronze__test")[0]
+    assert materialisation.metadata["flux_en_sommeil"].value == ["une"]
+
+
+def test_une_reussite_remet_le_compteur_d_echecs_a_zero(serveur, tmp_path):
+    serveur.statuts["/une"] = [404, 404]
+
+    collecter(serveur.source(), "2026-10-19", raise_on_error=False)
+    collecter(serveur.source(), "2026-10-20", raise_on_error=False)
+    assert lire_etat(tmp_path, "test", "une").echecs_consecutifs == 2
+
+    assert collecter(serveur.source(), "2026-10-21").success
+    etat = lire_etat(tmp_path, "test", "une")
+    assert (etat.actif, etat.echecs_consecutifs, etat.derniere_erreur) == (True, 0, None)
+    assert etat.derniere_reussite is not None
+
+
+def test_reactiver_remet_le_flux_en_service(serveur, tmp_path):
+    ecrire_etat(
+        tmp_path, "test", "une", EtatFlux(actif=False, echecs_consecutifs=3, derniere_erreur="404")
+    )
+    assert reactiver.main(["inconnue"], racine=tmp_path) == 1  # source sans état : rien à faire
+
+    assert reactiver.main(["test"], racine=tmp_path) == 0
+
+    assert lire_etat(tmp_path, "test", "une").actif
+    assert lire_etat(tmp_path, "test", "une").echecs_consecutifs == 0
+    assert collecter(serveur.source(), "2026-10-19").success
+    assert serveur.appels == ["/une"]  # le flux est de nouveau contacté
+
+
+@pytest.mark.parametrize("statut", [500, 502, 503, 504, 408, 429])
+def test_erreur_http_transitoire(statut):
+    reponse = requests.Response()
+    reponse.status_code = statut
+    assert bronze.est_transitoire(requests.HTTPError(response=reponse))
+
+
+@pytest.mark.parametrize("statut", [400, 401, 403, 404, 410])
+def test_erreur_http_permanente(statut):
+    reponse = requests.Response()
+    reponse.status_code = statut
+    assert not bronze.est_transitoire(requests.HTTPError(response=reponse))
+
+
+def test_erreurs_reseau_transitoires_et_url_invalide_permanente():
+    assert bronze.est_transitoire(requests.ConnectionError("injoignable"))
+    assert bronze.est_transitoire(requests.Timeout("trop lent"))
+    assert not bronze.est_transitoire(requests.exceptions.InvalidURL("pas une url"))
 
 
 def test_bronze_ne_reecrit_jamais_un_fichier(tmp_path):

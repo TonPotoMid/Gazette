@@ -15,6 +15,11 @@ Pas de doublon : un article déjà écrit pour (source, lien) n'est pas réécri
 jour ou le flux où il avait été collecté (l'id RSS sert de clé quand il n'a pas de lien). Les
 clés connues sont relues dans les Parquet existants. Un flux sans aucun article nouveau
 n'écrit aucun fichier : les articles ignorés sont comptés dans les métadonnées du run.
+
+Erreurs de collecte : une erreur transitoire (5xx, 408, 429, timeout, connexion) se règle par
+les relances de Dagster. Une erreur permanente (404, 410...) n'est pas relancée : elle est
+comptée dans etat/<slug>/<flux>.json, et trois échecs de suite mettent le flux en sommeil
+(voir etat.py). Le check sources_actives reste en échec tant qu'un flux dort.
 """
 
 import json
@@ -32,6 +37,13 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+from gazette.bronze.etat import (
+    SEUIL_SOMMEIL,
+    ecrire_etat,
+    lire_etat,
+    noter_echec_permanent,
+    noter_reussite,
+)
 from gazette.bronze.sources import Flux, Source, charger_sources
 from gazette.partitions import partitions_quotidiennes
 
@@ -39,9 +51,24 @@ DATA_DIR = Path(os.environ.get("GAZETTE_DATA_DIR", "data"))
 USER_AGENT = "GazetteBot/0.1 (projet etudiant M2Ops Efrei; lecture des flux RSS publics)"
 TIMEOUT_S = 30
 HTTP_RETRIES = 3
+HTTP_BACKOFF_S = 1
 CHECK_AU_MOINS_UN_ARTICLE = "au_moins_un_article"
+CHECK_SOURCES_ACTIVES = "sources_actives"
+STATUTS_TRANSITOIRES = {408, 429}
 
 relances = dg.RetryPolicy(max_retries=3, delay=30, backoff=dg.Backoff.EXPONENTIAL)
+
+
+def est_transitoire(erreur: requests.RequestException) -> bool:
+    """Une erreur qui peut passer d'elle-même (503, timeout...) : on réessaie.
+
+    Les autres (404, 410, URL invalide...) ne passeront pas en réessayant.
+    """
+    if isinstance(erreur, requests.HTTPError):
+        statut = erreur.response.status_code
+        return statut >= 500 or statut in STATUTS_TRANSITOIRES
+    return isinstance(erreur, requests.ConnectionError | requests.Timeout)
+
 
 SCHEMA_BRONZE = pa.schema(
     [
@@ -155,7 +182,7 @@ def creer_session() -> requests.Session:
         connect=HTTP_RETRIES,
         read=HTTP_RETRIES,
         status=HTTP_RETRIES,
-        backoff_factor=1,
+        backoff_factor=HTTP_BACKOFF_S,
         status_forcelist=(503,),
         allowed_methods=frozenset({"GET"}),
         raise_on_status=False,
@@ -164,15 +191,6 @@ def creer_session() -> requests.Session:
     session.mount("http://", adapter)
     session.mount("https://", adapter)
     return session
-
-
-def erreur_reessayable(erreur: requests.RequestException) -> bool:
-    """Un 404 est définitif ; les erreurs réseau et autres statuts restent retentables."""
-    return not (
-        isinstance(erreur, requests.HTTPError)
-        and erreur.response is not None
-        and erreur.response.status_code == 404
-    )
 
 
 def collecter_flux(
@@ -225,7 +243,12 @@ def construire_asset_bronze(source: Source) -> dg.AssetsDefinition:
                 CHECK_AU_MOINS_UN_ARTICLE,
                 asset=cle,
                 description="La source a renvoyé au moins un article (même déjà collecté).",
-            )
+            ),
+            dg.AssetCheckSpec(
+                CHECK_SOURCES_ACTIVES,
+                asset=cle,
+                description="Aucun flux de la source n'est en sommeil.",
+            ),
         ],
     )
     def _bronze(context: dg.AssetExecutionContext) -> dg.MaterializeResult:
@@ -239,11 +262,20 @@ def construire_asset_bronze(source: Source) -> dg.AssetsDefinition:
         dossier = DATA_DIR / "bronze" / f"date={date}" / source.slug
         debut = time.monotonic()
         cles_connues = cles_deja_ecrites(source.slug)
-        collectes, echecs = [], []
-        erreurs_reessayables = False
+        etats = {flux.nom: lire_etat(DATA_DIR, source.slug, flux.nom) for flux in source.flux}
+        flux_actifs = [flux for flux in source.flux if etats[flux.nom].actif]
+        flux_en_sommeil = [flux.nom for flux in source.flux if not etats[flux.nom].actif]
+        if flux_en_sommeil:
+            context.log.warning(
+                f"Flux en sommeil, non contactés : {', '.join(flux_en_sommeil)}. "
+                f"Réactivation : python -m gazette.reactiver {source.slug}"
+            )
+
+        collectes, echecs, erreur_transitoire = [], [], False
         with creer_session() as session:
             session.headers["User-Agent"] = USER_AGENT
-            for flux in source.flux:
+            for flux in flux_actifs:
+                etat = etats[flux.nom]
                 try:
                     collectes.append(
                         collecter_flux(session, source.slug, flux, dossier, cles_connues)
@@ -251,14 +283,31 @@ def construire_asset_bronze(source: Source) -> dg.AssetsDefinition:
                 except requests.RequestException as erreur:
                     context.log.warning(f"Flux {flux.nom} ({flux.url}) en échec : {erreur}")
                     echecs.append(f"{flux.nom} : {erreur}")
-                    erreurs_reessayables |= erreur_reessayable(erreur)
+                    if est_transitoire(erreur):
+                        erreur_transitoire = True
+                    elif context.retry_number == 0:  # une relance ne recompte pas le même échec
+                        if noter_echec_permanent(etat, str(erreur)):
+                            flux_en_sommeil.append(flux.nom)
+                            context.log.warning(
+                                f"Flux {flux.nom} en sommeil : {SEUIL_SOMMEIL} échecs "
+                                "permanents de suite."
+                            )
+                        ecrire_etat(DATA_DIR, source.slug, flux.nom, etat)
+                else:
+                    noter_reussite(etat, datetime.now(timezone.utc).isoformat())
+                    ecrire_etat(DATA_DIR, source.slug, flux.nom, etat)
         duree_s = round(time.monotonic() - debut, 2)
 
-        if not collectes:
+        if flux_actifs and not collectes:
             raise dg.Failure(
                 description=f"Aucun flux de {source.nom} n'a répondu.",
-                metadata={"flux_en_echec": echecs, "duree_s": duree_s},
-                allow_retries=erreurs_reessayables,
+                metadata={
+                    "flux_en_echec": echecs,
+                    "flux_en_sommeil": flux_en_sommeil,
+                    "duree_s": duree_s,
+                },
+                # Transitoire : les relances de Dagster. Permanent : inutile de réessayer.
+                allow_retries=erreur_transitoire,
             )
 
         nb_recus = sum(c["nb_recus"] for c in collectes)
@@ -276,6 +325,7 @@ def construire_asset_bronze(source: Source) -> dg.AssetsDefinition:
                 "nb_flux_ok": len(collectes),
                 "nb_flux_en_echec": len(echecs),
                 "flux_en_echec": echecs,
+                "flux_en_sommeil": flux_en_sommeil,
                 "duree_s": duree_s,
                 "octets": sum(c["octets"] for c in collectes),
                 "fichiers": [c["fichier"] for c in collectes if c["fichier"]],
@@ -286,7 +336,16 @@ def construire_asset_bronze(source: Source) -> dg.AssetsDefinition:
                     passed=nb_recus > 0,
                     severity=dg.AssetCheckSeverity.ERROR,
                     metadata={"nb_recus": nb_recus},
-                )
+                ),
+                dg.AssetCheckResult(
+                    check_name=CHECK_SOURCES_ACTIVES,
+                    passed=not flux_en_sommeil,
+                    severity=dg.AssetCheckSeverity.ERROR,
+                    metadata={
+                        "flux_en_sommeil": flux_en_sommeil,
+                        "reactiver": f"python -m gazette.reactiver {source.slug}",
+                    },
+                ),
             ],
         )
 
