@@ -1,7 +1,7 @@
 import dagster as dg
 
 from gazette.bronze import assets_bronze
-from gazette.silver import assets_silver, controles_silver
+from gazette.silver.assets import assets_silver, controles_silver
 from gazette.silver.declencheurs import declencheurs_silver
 
 job_quotidien = dg.define_asset_job(
