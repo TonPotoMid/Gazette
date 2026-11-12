@@ -340,6 +340,14 @@ def test_les_definitions_relient_silver_au_bronze_et_le_declenchent_apres_lui():
     assert amont == set(silver_assets.CLES_BRONZE) and len(amont) == 8
 
     capteurs = {s.name: s for s in definitions.defs.sensors}
-    assert set(capteurs) == {"silver_apres_bronze_success", "silver_apres_bronze_failure"}
+    assert set(capteurs) == {
+        "silver_apres_bronze_success",
+        "silver_apres_bronze_failure",
+        "themes_apres_silver",
+    }
     assert all(s.default_status == dg.DefaultSensorStatus.RUNNING for s in capteurs.values())
-    assert {j.name for j in definitions.defs.jobs} == {"gazette_quotidienne", "gazette_silver"}
+    assert {j.name for j in definitions.defs.jobs} == {
+        "gazette_quotidienne",
+        "gazette_silver",
+        "gazette_themes",
+    }

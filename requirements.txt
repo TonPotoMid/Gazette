@@ -1,3 +1,5 @@
+# torch en version CPU : l'index PyTorch évite d'installer CUDA (plusieurs Go) dans l'image et en CI.
+--extra-index-url https://download.pytorch.org/whl/cpu
 dagster==1.13.26
 dagster-webserver==1.13.26
 dagster-postgres==0.29.26
@@ -7,3 +9,10 @@ feedparser==6.0.14
 pyarrow==26.0.0
 requests==2.34.2
 pytest==8.4.2
+# Regroupement par thèmes
+pyyaml==6.0.3
+numpy==2.4.6
+scikit-learn==1.9.1
+torch==2.15.0+cpu
+sentence-transformers==6.3.0
+transformers==5.22.2

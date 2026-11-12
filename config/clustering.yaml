@@ -1,0 +1,33 @@
+# Paramètres du regroupement par thèmes. Aucun de ces réglages n'est écrit dans le code :
+# les changer ici change le prochain run, et chaque run garde la copie de ceux qu'il a lus
+# (table `runs`, colonne `parametres`).
+
+# Les articles propres publiés dans les N heures qui précèdent la collecte du jour.
+fenetre_heures: 24
+
+# Ce qui est vectorisé : le titre, puis l'extrait.
+texte:
+  champs: [titre, extrait]
+
+modele:
+  # Modèle multilingue léger (~120 M de paramètres), assez rapide sur CPU.
+  nom: sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
+  # Version figée (commit du dépôt Hugging Face) : le même run donne les mêmes vecteurs.
+  revision: e8f8c211226b894fcb81acc59f3b34ba3efd5f42
+  taille_lot: 64
+  # Vecteurs de norme 1 : la distance euclidienne suit alors la similarité cosinus.
+  normaliser: true
+
+regroupement:
+  # Famille 2 : HDBSCAN trouve le nombre de groupes seul et laisse de côté le bruit.
+  algorithme: hdbscan
+  taille_min_groupe: 3       # un thème = au moins 3 articles
+  echantillons_min: 2        # plus haut = plus d'articles classés en bruit
+  metrique: euclidean
+  methode_selection: eom     # « eom » : groupes stables ; « leaf » : groupes plus fins
+
+nommage:
+  # Le nom d'un thème = ses mots les plus discriminants (c-TF-IDF).
+  nb_mots: 4
+  longueur_min_mot: 3
+  mots_vides: config/mots_vides_fr.txt

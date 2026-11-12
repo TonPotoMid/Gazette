@@ -25,6 +25,8 @@ La signature d'un auteur n'existe que dans le bronze, tel que le flux la donne (
 | Silver, rejets | `data/silver/rejets/date=AAAA-MM-JJ/rejets.parquet` | Parquet (zstd) | Idem |
 | Rapport de qualité | `rapports/qualite-AAAA-MM-JJ.md` | Markdown | Un par jour, remplacé si le jour est relancé |
 | État des flux | `data/etat/<source>/<flux>.json` | JSON | Mis à jour à chaque collecte |
+| Gold, thèmes et runs | `data/gold/gazette.db` : tables `runs`, `themes`, `articles_themes` | SQLite | Ajout : chaque run écrit ses lignes sous son `run_id`, les runs précédents restent. Les thèmes du jour sont ceux du dernier run réussi (vue `themes_du_jour`) |
+| Cache des vecteurs | `data/cache/vecteurs.sqlite` | SQLite | Ajout seulement : un texte n'est vectorisé qu'une fois par modèle |
 
 `data/` et `rapports/` sont les dossiers montés dans les conteneurs.
 
@@ -75,10 +77,15 @@ Les mêmes champs que `articles_propres`, plus :
 | `regle` | La règle qui a écarté l'article (`R01_publi`… `R10_doublon_approx`, voir `qualite.md`) |
 | `doublon_de_source`, `doublon_de_lien` | Pour un doublon : la source et le lien de l'article conservé, sinon vides |
 
+### Gold : `themes`, `articles_themes`, `runs`
+
+Le détail des colonnes, et comment retrouver le run qui a produit les thèmes en base, est dans [`mlops.md`](mlops.md). Un article de `articles_themes` se rattache à `articles_propres` par `(source, lien)`.
+
 ## Fraîcheur
 
 - Le bronze est collecté **une fois par jour, à 6 h 00 (heure de Paris)**, pour la date du jour.
 - Le silver est calculé **dès que le job bronze se termine**, sans heure propre. Les contrôles de qualité tournent juste après.
+- Les thèmes sont calculés **dès que le silver du jour a réussi**, sur les articles propres des 24 h qui précèdent la collecte.
 - Objectif : les données du jour sont prêtes **avant 8 h**.
 - Un jour est une partition : on peut le rejouer, et le silver du jour est alors recalculé à l'identique à partir du bronze.
 - Un flux RSS ne donne que les articles du moment : rejouer un jour passé collecte le flux actuel, pas celui de la date rejouée.
@@ -90,6 +97,8 @@ Les mêmes champs que `articles_propres`, plus :
 | Bronze (fichiers bruts) | 90 jours | supprimé |
 | Silver (`articles_propres`, `rejets`) | 1 an | supprimé |
 | Rapports de qualité | 1 an | supprimé |
+| Thèmes et runs (`gazette.db`) | 1 an | supprimés |
+| Cache des vecteurs | tant que le modèle est utilisé | supprimable à tout moment (tout est revectorisé) |
 | Éditions de la gazette (à venir) | 30 jours en ligne | déplacées vers un stockage froid (archive compressée) |
 | État des flux | tant que le flux existe | — |
 

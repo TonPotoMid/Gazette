@@ -2,7 +2,11 @@
 # Les identifiants Postgres ont des valeurs par défaut ; les surcharger dans un fichier .env.
 
 x-dagster: &dagster
-  build: .
+  build:
+    context: .
+    args:
+      # Le commit inscrit dans chaque run : GAZETTE_VERSION_CODE=$(git rev-parse --short HEAD) docker compose build
+      GAZETTE_VERSION_CODE: ${GAZETTE_VERSION_CODE:-}
   image: gazette-dagster
   restart: unless-stopped
   environment:
@@ -42,6 +46,8 @@ services:
       - ./data:/data
       # Rapports de qualité visibles en local : ./rapports/qualite-AAAA-MM-JJ.md
       - ./rapports:/rapports
+      # Paramètres du regroupement, relus à chaque run : les changer ne demande pas de rebuild.
+      - ./config:/opt/gazette/config:ro
     healthcheck:
       test: ["CMD", "dagster", "api", "grpc-health-check", "-p", "4000"]
       interval: 10s

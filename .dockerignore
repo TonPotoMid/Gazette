@@ -6,3 +6,4 @@ rapports
 **/.pytest_cache
 .env
 docs/architecture.jpeg
+.venv
