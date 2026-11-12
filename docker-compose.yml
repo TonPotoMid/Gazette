@@ -40,6 +40,8 @@ services:
       - dagster_storage:/opt/dagster/storage
       # Données du pipeline visibles en local : ./data/<étape>/date=AAAA-MM-JJ/<journal>/
       - ./data:/data
+      # Rapports de qualité visibles en local : ./rapports/qualite-AAAA-MM-JJ.md
+      - ./rapports:/rapports
     healthcheck:
       test: ["CMD", "dagster", "api", "grpc-health-check", "-p", "4000"]
       interval: 10s

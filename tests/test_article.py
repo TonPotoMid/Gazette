@@ -16,6 +16,8 @@ def ligne(**champs) -> dict:
         "summary": "Un extrait.",
         "published": "Thu, 12 Nov 2026 05:00:00 +0100",
         "tags": [],
+        "fichier": "bronze/date=2026-11-12/le_monde/une.parquet",
+        "rang": 3,
     }
     return {**base, **champs}
 
@@ -36,6 +38,8 @@ def test_depuis_bronze_normalise_les_champs():
     assert article.rubriques == ("Faits divers", "Société")
     assert article.publie_le == datetime(2026, 11, 12, 4, 0, tzinfo=UTC)
     assert (article.source, article.jour, article.recupere_le) == ("le_monde", "2026-11-12", RECU)
+    assert article.fichier_brut == "bronze/date=2026-11-12/le_monde/une.parquet"
+    assert article.rang_brut == 3
 
 
 def test_depuis_bronze_borne_l_extrait():

@@ -16,6 +16,8 @@ class Article:
     rubriques: tuple[str, ...]
     publie_le: datetime | None  # UTC ; None si la date manque ou est illisible
     recupere_le: datetime
+    fichier_brut: str  # le fichier bronze d'où il vient, relatif à la racine des données
+    rang_brut: int  # sa position dans ce fichier
 
 
 def depuis_bronze(ligne: dict) -> Article:
@@ -31,4 +33,6 @@ def depuis_bronze(ligne: dict) -> Article:
         ),
         publie_le=date_en_utc(ligne["published"]),
         recupere_le=ligne["recu_le"],
+        fichier_brut=ligne["fichier"],
+        rang_brut=ligne["rang"],
     )

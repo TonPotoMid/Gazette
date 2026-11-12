@@ -72,6 +72,7 @@ def ecrire_articles(racine, jour: str, source: str, titres: list[str]) -> None:
             "recu_le": pa.array(
                 [datetime(2026, 11, 12, 6, tzinfo=UTC)] * n, pa.timestamp("us", "UTC")
             ),
+            "rang": pa.array(range(n), pa.int32()),
             "title": titres,
             "link": [f"https://exemple.fr/{source}/{i}" for i in range(n)],
             "summary": [f"Un extrait de {source} numéro {i}." for i in range(n)],

@@ -18,6 +18,8 @@ def article(**champs) -> Article:
         "rubriques": (),
         "publie_le": RECU - timedelta(hours=1),
         "recupere_le": RECU,
+        "fichier_brut": "bronze/date=2026-11-12/le_monde/une.parquet",
+        "rang_brut": 0,
     }
     base.update(champs)
     base.setdefault("extrait", f"Extrait de {base['source']} {base['lien']} {base['titre']}")

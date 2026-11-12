@@ -6,6 +6,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     DAGSTER_HOME=/opt/dagster/dagster_home \
     GAZETTE_DATA_DIR=/data \
+    GAZETTE_RAPPORTS_DIR=/rapports \
     PYTHONPATH=/opt/gazette \
     TZ=Europe/Paris
 
@@ -20,4 +21,4 @@ COPY docs/sources.csv ./docs/sources.csv
 COPY gazette ./gazette
 COPY tests ./tests
 
-RUN mkdir -p /data /opt/dagster/storage
+RUN mkdir -p /data /rapports /opt/dagster/storage

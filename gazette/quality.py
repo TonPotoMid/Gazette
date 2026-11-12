@@ -10,8 +10,8 @@ import pyarrow.parquet as pq
 from gazette.bronze.sources import charger_sources
 from gazette.silver import regles
 from gazette.silver.article import Article, depuis_bronze
+from gazette.silver.lecture import lire_bronze
 
-COLONNES = ["source", "recu_le", "title", "link", "summary", "published", "tags"]
 SEUILS_SENSIBILITE = (0.8, 0.7, 0.6)
 
 
@@ -22,16 +22,6 @@ def compter_bronze(racine: Path) -> dict[date, dict[str, int]]:
         jour = date.fromisoformat(fichier.parts[-3].removeprefix("date="))
         comptes[jour][fichier.parts[-2]] += pq.ParquetFile(fichier).metadata.num_rows
     return {jour: dict(par_source) for jour, par_source in sorted(comptes.items())}
-
-
-def lire_bronze(racine: Path) -> list[dict]:
-    """Tous les articles du bronze, avec leur jour de collecte."""
-    lignes = []
-    for fichier in sorted((racine / "bronze").glob("date=*/*/*.parquet")):
-        jour = fichier.parts[-3].removeprefix("date=")
-        for ligne in pq.read_table(fichier, columns=COLONNES).to_pylist():
-            lignes.append({**ligne, "jour": jour})
-    return lignes
 
 
 def plages(jours: list[date]) -> str:
