@@ -1,9 +1,9 @@
-import email.utils
 import itertools
 import re
 from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+
+from gazette.silver.normalisation import date_en_utc, reparer_encodage
 
 SEUIL_QUASI_DOUBLON = 0.8
 SEUILS_SENSIBILITE = (0.8, 0.7, 0.6)
@@ -37,15 +37,6 @@ def mots(titre: str | None) -> set[str]:
 
 def jaccard(a: set[str], b: set[str]) -> float:
     return len(a & b) / len(a | b) if a and b else 0.0
-
-
-def date_publication(ligne: dict) -> datetime | None:
-    """La date RSS en UTC ; None si elle manque ou est illisible."""
-    try:
-        date = email.utils.parsedate_to_datetime(ligne["published"])
-    except (TypeError, ValueError):
-        return None
-    return date if date.tzinfo else date.replace(tzinfo=UTC)
 
 
 def groupes_quasi_doublons(lignes: list[dict], seuil: float) -> list[list[dict]]:
@@ -84,18 +75,12 @@ def _cherche(motif: str, texte: str) -> bool:
 
 
 def encodage_casse(texte: str | None) -> bool:
-    """Vrai pour « Ã© » à la place de « é » : un texte UTF-8 relu comme du cp1252.
+    """Vrai pour « Ã© » à la place de « é » : un texte que `reparer_encodage` change.
 
-    Les accents normaux (â, é, ç…) ne déclenchent rien : seul un texte qui redevient
-    lisible en le relisant en UTF-8 est cassé. Le caractère de remplacement � l'est aussi.
+    Les accents normaux (â, é, ç…) ne déclenchent rien. Le caractère de remplacement � l'est aussi.
     """
     texte = texte or ""
-    if "�" in texte:
-        return True
-    try:
-        return texte.encode("cp1252").decode("utf-8") != texte
-    except (UnicodeEncodeError, UnicodeDecodeError):
-        return False
+    return "\ufffd" in texte or reparer_encodage(texte) != texte
 
 
 def mesurer(lignes: list[dict]) -> list[Mesure]:
@@ -112,7 +97,7 @@ def mesurer(lignes: list[dict]) -> list[Mesure]:
     quasi = groupes_quasi_doublons(lignes, SEUIL_QUASI_DOUBLON)
 
     def date_future(ligne: dict) -> bool:
-        date = date_publication(ligne)
+        date = date_en_utc(ligne["published"])
         return date is not None and date > ligne["recu_le"]
 
     return [
