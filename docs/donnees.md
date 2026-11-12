@@ -77,9 +77,9 @@ Les mêmes champs que `articles_propres`, plus :
 
 ## Fraîcheur
 
-- Le bronze est collecté **une fois par jour, à 6 h 00 (heure de Paris)**, pour la date du jour.
+- Le bronze est collecté **toutes les 30 minutes (heure de Paris)**, dans la partition de la date du jour. Chaque passage n'ajoute que les articles jamais vus, et un seul passage tourne à la fois.
 - Le silver est calculé **dès que le job bronze se termine**, sans heure propre. Les contrôles de qualité tournent juste après.
-- Objectif : les données du jour sont prêtes **avant 8 h**.
+- Objectif : les données du jour sont prêtes **avant 8 h** ; elles ont au plus ~30 minutes de retard sur les flux.
 - Un jour est une partition : on peut le rejouer, et le silver du jour est alors recalculé à l'identique à partir du bronze.
 - Un flux RSS ne donne que les articles du moment : rejouer un jour passé collecte le flux actuel, pas celui de la date rejouée.
 

@@ -18,6 +18,11 @@ run_coordinator:
   class: QueuedRunCoordinator
   config:
     max_concurrent_runs: 2
+    # Une seule collecte bronze à la fois (tag posé par le job gazette_quotidienne).
+    tag_concurrency_limits:
+      - key: "gazette/collecte"
+        value: "bronze"
+        limit: 1
 
 # Volume partagé entre conteneurs : le webserver affiche les stdout/stderr écrits par les runs.
 local_artifact_storage:

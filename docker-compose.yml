@@ -64,7 +64,7 @@ services:
       code:
         condition: service_healthy
 
-  # Démon : déclenche le schedule de 6 h et dépile la file des runs.
+  # Démon : déclenche le schedule de collecte (toutes les 30 min) et dépile la file des runs.
   daemon:
     <<: *dagster
     command: ["dagster-daemon", "run", "-w", "/opt/dagster/dagster_home/workspace.yaml"]
